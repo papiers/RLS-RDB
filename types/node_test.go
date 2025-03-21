@@ -5,9 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"testing"
-	"unsafe"
-
-	jsoniter "github.com/json-iterator/go"
 )
 
 func TestBNode_bType(t *testing.T) {
@@ -32,33 +29,7 @@ func TestBNode_nKeys(t *testing.T) {
 	}
 }
 
-type A struct {
-	data []int32
-	b    *int32
-}
-
-func SetA(a A, val int32) {
-	fmt.Printf("SetA Address of the slice: %p\n", unsafe.Pointer(&a.data[0]))
-	a.data[0] = val
-}
-func SetB(a A, val int32) {
-	*a.b = val
-}
-func SetAP(a *A, val int32) {
-	a.data[0] = val
-}
 func TestBNode_setHeader(t *testing.T) {
-	a := A{data: make([]int32, 1), b: new(int32)}
-	fmt.Printf("Address of the slice: %p\n", unsafe.Pointer(&a.data[0]))
-	fmt.Println("init data:", a.data[0], "b:", *a.b)
-
-	// c := a
-	// SetAP(&c, 10)
-
-	SetA(a, 100)
-	SetB(a, 99)
-	fmt.Println("init data:", a.data[0], "b:", *a.b)
-
 	data := make([]byte, 4)
 	b := &BNode{data: data}
 	b.setHeader(3, 4) // 设置类型为3，键的数量为4
@@ -70,6 +41,18 @@ func TestBNode_setHeader(t *testing.T) {
 	if nKeys := b.nKeys(); nKeys != 4 {
 		t.Errorf("expected nKeys to be 4 after setHeader, got %d", nKeys)
 	}
+}
+
+func TestBNode_modify(t *testing.T) {
+	type BNode struct {
+		data []byte
+	}
+	right := BNode{make([]byte, BTreePageSize)}
+	right.data[0] = 1
+	right.data = right.data[:10]
+	fmt.Println("right.data:", right.data)
+	fmt.Println("len(right.data):", len(right.data))
+	fmt.Println("cap(right.data):", cap(right.data))
 }
 
 // TestLeafInsert 是用于测试 leafInsert
@@ -101,67 +84,119 @@ func TestLeafInsert(t *testing.T) {
 	}
 }
 
-func TestList(t *testing.T) {
-	a := []int{1, 2, 3}
-	fmt.Println("原值", a)
+func TestLeafInsert_EmptyNode(t *testing.T) {
+	oldNode := BNode{data: make([]byte, BTreePageSize)}
+	oldNode.setHeader(BNodeLeaf, 0)
 
-	update(a)
+	newNode1 := BNode{data: make([]byte, BTreePageSize)}
+	key := []byte("testKey")
+	val := []byte("testVal")
+	leafInsert(newNode1, oldNode, 0, key, val)
 
-	fmt.Println("值传递，但是修改了原值", a)
-	c := ap(a)
+	newNode2 := BNode{data: make([]byte, BTreePageSize)}
+	key = []byte("tstKey1")
+	val = []byte("tstVal1")
+	leafInsert(newNode2, newNode1, 0, key, val)
 
-	fmt.Println("值传递，但是没有append原值", a)
-	fmt.Println(c)
+	newNode3 := BNode{data: make([]byte, BTreePageSize)}
+	key = []byte("testKey2")
+	val = []byte("testVal2")
+	leafInsert(newNode3, newNode2, 1, key, val)
 
-	apPtr(&c)
-	fmt.Println(c)
+	fmt.Println(oldNode.String())
+	fmt.Println(newNode1.String())
+	fmt.Println(newNode2.String())
+	fmt.Println(newNode3.String())
 }
 
-func update(list []int) {
-	list[0] = 10
-}
+func TestLeafInsert_AtEnd(t *testing.T) {
+	newNode := BNode{data: make([]byte, BTreePageSize)}
+	oldNode := BNode{data: make([]byte, BTreePageSize)}
+	oldNode.setHeader(BNodeLeaf, 2)
 
-func apPtr(list *[]int) *[]int {
-	*list = append(*list, 4)
-	return list
-}
+	key1 := []byte("key1")
+	val1 := []byte("val1")
+	key2 := []byte("key2")
+	val2 := []byte("val2")
+	key3 := []byte("key3")
+	val3 := []byte("val3")
 
-func ap(list []int) []int {
-	list = append(list, 4)
-	return list
-}
+	nodeAppendKV(oldNode, 0, 0, key1, val1)
+	nodeAppendKV(oldNode, 1, 0, key2, val2)
 
-func TestA(t *testing.T) {
-	sa := TestStruct{Num: 622047417211854848, Name: "hello"}
-	m := StructToMapUseJsonNum(sa)
-	fmt.Println("map:", m)
-	num, ok := m["num"].(float64)
-	fmt.Println("num:", num, "ok:", ok)
-}
+	leafInsert(newNode, oldNode, 2, key3, val3)
 
-type TestStruct struct {
-	Num  int64  `json:"num"`
-	Name string `json:"name"`
-}
-
-// StructToMapUseJsonNum 结构体转map，使用jsoniter的UseNumber
-func StructToMapUseJsonNum(stInput interface{}) map[string]interface{} {
-	if nil == stInput {
-		return nil
+	if newNode.nKeys() != 3 {
+		t.Errorf("Expected nKeys to be 3, got %d", newNode.nKeys())
 	}
-	ret := make(map[string]interface{})
 
-	jData, err := jsoniter.Marshal(stInput)
-	if nil != err {
-		return nil
+	expectedData := make([]byte, BTreePageSize)
+	newNode.setHeader(BNodeLeaf, 3)
+	nodeAppendKV(newNode, 0, 0, key1, val1)
+	nodeAppendKV(newNode, 1, 0, key2, val2)
+	nodeAppendKV(newNode, 2, 0, key3, val3)
+
+	if !bytes.Equal(newNode.data, expectedData) {
+		t.Errorf("Expected data to be %v, got %v", expectedData, newNode.data)
 	}
-	fmt.Println("jData:", string(jData))
-	j := jsoniter.Config{
-		UseNumber: true,
-	}.Froze()
-	err = j.Unmarshal(jData, &ret)
-	if nil != err {
-		return nil
+}
+
+func TestLeafInsert1(t *testing.T) {
+	// 创建新的BNode和旧的BNode
+	newNode := BNode{data: make([]byte, BTreePageSize)}
+	oldNode := BNode{data: make([]byte, BTreePageSize)}
+
+	// 设置旧的BNode的键值对数量
+	oldNode.setHeader(BNodeLeaf, 1)
+
+	// 测试数据
+	key := []byte("testKey")
+	val := []byte("testVal")
+
+	// 调用leafInsert函数
+	leafInsert(newNode, oldNode, 0, key, val)
+
+	// 验证新的BNode的键值对数量
+	if newNode.nKeys() != 2 {
+		t.Errorf("Expected nKeys to be 2, got %d", newNode.nKeys())
 	}
-	return ret
+
+	// 验证新的BNode的数据
+	expectedData := append([]byte{0, 2}, key...)
+	expectedData = append(expectedData, val...)
+	if !bytes.Equal(newNode.data, expectedData) {
+		t.Errorf("Expected data to be %v, got %v", expectedData, newNode.data)
+	}
+}
+
+func TestLeafInsert_MultipleKeys(t *testing.T) {
+	newNode := BNode{data: make([]byte, BTreePageSize)}
+	oldNode := BNode{data: make([]byte, BTreePageSize)}
+	oldNode.setHeader(BNodeLeaf, 2)
+
+	key1 := []byte("key1")
+	val1 := []byte("val1")
+	key2 := []byte("key2")
+	val2 := []byte("val2")
+	key3 := []byte("key3")
+	val3 := []byte("val3")
+
+	nodeAppendKV(oldNode, 0, 0, key1, val1)
+	nodeAppendKV(oldNode, 1, 0, key2, val2)
+
+	leafInsert(newNode, oldNode, 1, key3, val3)
+
+	if newNode.nKeys() != 3 {
+		t.Errorf("Expected nKeys to be 3, got %d", newNode.nKeys())
+	}
+
+	expectedData := make([]byte, BTreePageSize)
+	newNode.setHeader(BNodeLeaf, 3)
+	nodeAppendKV(newNode, 0, 0, key1, val1)
+	nodeAppendKV(newNode, 1, 0, key3, val3)
+	nodeAppendKV(newNode, 2, 0, key2, val2)
+
+	if !bytes.Equal(newNode.data, expectedData) {
+		t.Errorf("Expected data to be %v, got %v", expectedData, newNode.data)
+	}
 }

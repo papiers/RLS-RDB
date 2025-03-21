@@ -32,29 +32,24 @@ func treeInsert(tree *BTree, node BNode, key []byte, val []byte) BNode {
 		}
 	case BNodeNode:
 		// 内部节点，将其插入到子节点。
-		nodeInsert(tree, newNode, node, idx, key, val)
+		// 获取并释放子节点
+		kPtr := node.getPtr(idx)
+		kNode := tree.get(kPtr)
+		tree.del(kPtr)
+		// 递归插入到子节点
+		kNode = treeInsert(tree, kNode, key, val)
+		// 拆分结果
+		nSplit, split := nodeSplit3(kNode)
+		// 更新子结点链接
+		nodeReplaceKidN(tree, newNode, node, idx, split[:nSplit]...)
 	default:
 		panic("bad node!")
 	}
 	return newNode
 }
 
-// nodeInsert treeInsert()的部分: KV插入到中间节点
-func nodeInsert(tree *BTree, newNode BNode, node BNode, idx uint16, key []byte, val []byte) {
-	// 获取并释放子节点
-	kPtr := node.getPtr(idx)
-	kNode := tree.get(kPtr)
-	tree.del(kPtr)
-	// 递归插入到子节点
-	kNode = treeInsert(tree, kNode, key, val)
-	// 拆分结果
-	nSplit, split := nodeSplit3(kNode)
-	// 更新子结点链接
-	nodeReplaceKidN(tree, newNode, node, idx, split[:nSplit]...)
-}
-
 // nodeSplit2 将大于允许的节点拆分为2个节点，第2个节点始终适合页面。
-func nodeSplit2(left BNode, right BNode, old BNode) {
+func nodeSplit2(left, right, old BNode) {
 	util.Assert(old.nKeys() >= 2)
 
 	// 最初的猜测
@@ -62,7 +57,7 @@ func nodeSplit2(left BNode, right BNode, old BNode) {
 
 	// 尝试适配左半部分
 	leftBytes := func() uint16 {
-		return Header + 8*nLeft + 2*nLeft + old.getOffset(nLeft)
+		return Header + PointerSize*nLeft + offsetSize*nLeft + old.getOffset(nLeft)
 	}
 	for leftBytes() > BTreePageSize {
 		nLeft--
@@ -90,6 +85,7 @@ func nodeSplit2(left BNode, right BNode, old BNode) {
 // nodeSplit3 如果节点太大，则拆分节点。结果可能是 1~3 个节点。
 // 最坏情况下 有个一个大KV在中间
 func nodeSplit3(old BNode) (uint16, [3]BNode) {
+	util.Assert(old.nBytes() <= 3*BTreePageSize+2*Header)
 	if old.nBytes() <= BTreePageSize {
 		old.data = old.data[:BTreePageSize]
 		return 1, [3]BNode{old}
@@ -109,8 +105,8 @@ func nodeSplit3(old BNode) (uint16, [3]BNode) {
 	return 3, [3]BNode{leftOfLeft, middle, right}
 }
 
-// nodeReplaceKidN 将链接替换为多个链接
-func nodeReplaceKidN(tree *BTree, dstNode BNode, srcNode BNode, idx uint16, kids ...BNode) {
+// nodeReplaceKidN 将节点中idx节点替换为多个子节点。
+func nodeReplaceKidN(tree *BTree, dstNode, srcNode BNode, idx uint16, kids ...BNode) {
 	dstNode.setHeader(BNodeNode, srcNode.nKeys()+uint16(len(kids))-1)
 	nodeAppendRange(dstNode, srcNode, 0, 0, idx)
 	for i, node := range kids {
@@ -280,8 +276,7 @@ func (tree *BTree) Insert(key []byte, val []byte) {
 		root := BNode{data: make([]byte, BTreePageSize)}
 		root.setHeader(BNodeNode, nSplit)
 		for i, kNode := range split[:nSplit] {
-			ptr, key := tree.new(kNode), kNode.getKey(0)
-			nodeAppendKV(root, uint16(i), ptr, key, nil)
+			nodeAppendKV(root, uint16(i), tree.new(kNode), kNode.getKey(0), nil)
 		}
 		tree.root = tree.new(root)
 	} else {

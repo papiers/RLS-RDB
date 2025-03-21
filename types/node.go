@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
-	"strings"
 
 	"db-practice/util"
 )
@@ -18,6 +16,11 @@ const (
 
 	BNodeNode = 1 // 中间结点没有val
 	BNodeLeaf = 2 // 叶子结点有val
+
+	PointerSize = 8
+	offsetSize  = 2
+	KeyLenSize  = 2
+	ValLenSize  = 2
 )
 
 // BNode btree 的一个结点
@@ -27,7 +30,7 @@ const (
 // |------------|-------------------|
 // | type       | 2 bytes           |
 // | nkeys      | 2 bytes           |
-// | pointers   | nkeys * 8 bytes   |（仅用于内部节点）
+// | pointers   | nkeys * 8 bytes   |（仅用于内部节点，叶子节点没有指针）
 // | offsets    | nkeys * 2 bytes   |
 // 2. 键值对格式
 // | 字段   | 大小       |
@@ -53,24 +56,35 @@ func (b *BNode) nKeys() uint16 {
 
 // setHeader 设置结点的类型和键的数量
 func (b *BNode) setHeader(btype, nKeys uint16) {
-	binary.LittleEndian.PutUint16(b.data[0:2], btype)
-	binary.LittleEndian.PutUint16(b.data[2:4], nKeys)
+	binary.LittleEndian.PutUint16(b.data, btype)
+	binary.LittleEndian.PutUint16(b.data[2:], nKeys)
 }
 
 // getPtr 返回索引为idx的子节点指针值
 func (b *BNode) getPtr(idx uint16) uint64 {
-	return binary.LittleEndian.Uint64(b.data[Header+8*idx:])
+	util.Assert(idx < b.nKeys())
+	return binary.LittleEndian.Uint64(b.data[Header+PointerSize*idx:])
 }
 
 // setPtr 设置索引为idx的子节点指针值
 func (b *BNode) setPtr(idx uint16, val uint64) {
-	binary.LittleEndian.PutUint64(b.data[Header+8*idx:], val)
+	binary.LittleEndian.PutUint64(b.data[Header+PointerSize*idx:], val)
 }
 
-// offsetPos 返回索引为idx的偏移量
+// offsetPos 返回索引为idx的偏移量存储位置
 func (b *BNode) offsetPos(idx uint16) uint16 {
+	// idx == b.nKeys()时，返回最后一个偏移量位置 记录node大小
+	util.Assert(idx > 0 && idx <= b.nKeys())
 	// 第一个kv的offset为0
-	return Header + 8*b.nKeys() + 2*(idx-1)
+	return Header + PointerSize*b.nKeys() + offsetSize*(idx-1)
+}
+
+// getOffsetPos 返回索引为idx的偏移量存储位置
+func (b *BNode) getOffsetPos(idx uint16) uint16 {
+	if idx == 0 {
+		return 0
+	}
+	return b.offsetPos(idx)
 }
 
 // getOffset 返回索引为idx的偏移量
@@ -88,22 +102,41 @@ func (b *BNode) setOffset(idx uint16, offset uint16) {
 
 // kvPos 返回索引为idx的键值对位置
 func (b *BNode) kvPos(idx uint16) uint16 {
-	return Header + 8*b.nKeys() + 2*b.nKeys() + b.getOffset(idx)
+	// idx == b.nKeys()时，返回最后一个偏移量位置 记录node大小
+	util.Assert(idx <= b.nKeys())
+	return Header + PointerSize*b.nKeys() + offsetSize*b.nKeys() + b.getOffset(idx)
 }
 
 // getKey 返回索引为idx的键值
 func (b *BNode) getKey(idx uint16) []byte {
+	util.Assert(idx < b.nKeys())
 	pos := b.kvPos(idx)
 	kLen := binary.LittleEndian.Uint16(b.data[pos:])
-	return b.data[pos+4:][:kLen]
+	return b.data[pos+KeyLenSize+ValLenSize:][:kLen]
 }
 
 // getVal 返回索引为idx的值
 func (b *BNode) getVal(idx uint16) []byte {
+	util.Assert(idx < b.nKeys())
 	pos := b.kvPos(idx)
 	kLen := binary.LittleEndian.Uint16(b.data[pos:])
-	vLen := binary.LittleEndian.Uint16(b.data[pos+2:])
-	return b.data[pos+4+kLen:][:vLen]
+	vLen := binary.LittleEndian.Uint16(b.data[pos+KeyLenSize:])
+	start := pos + KeyLenSize + ValLenSize + kLen
+	return b.data[start:][:vLen]
+}
+
+// getKeyLen 返回索引为idx的键的长度
+func (b *BNode) getKeyLen(idx uint16) uint16 {
+	util.Assert(idx < b.nKeys())
+	pos := b.kvPos(idx)
+	return binary.LittleEndian.Uint16(b.data[pos:])
+}
+
+// getValLen 返回索引为idx的值的长度
+func (b *BNode) getValLen(idx uint16) uint16 {
+	util.Assert(idx < b.nKeys())
+	pos := b.kvPos(idx)
+	return binary.LittleEndian.Uint16(b.data[pos+KeyLenSize:])
 }
 
 // nBytes 返回结点的大小
@@ -113,28 +146,48 @@ func (b *BNode) nBytes() uint16 {
 
 // String 返回结点信息
 func (b *BNode) String() string {
-	mp := map[string]string{}
-	mp["nkeys"] = fmt.Sprintf("%d", b.nKeys())
-	sp := strings.Builder{}
-	skv := strings.Builder{}
+	nodeS := struct {
+		Type         string   `json:"type"`
+		NKeys        uint16   `json:"nKeys"`
+		Pointers     []uint64 `json:"pointers"`
+		Offsets      []uint16 `json:"offsets"`
+		OffsetsStart []uint16 `json:"offsets_start"`
+		KeyVal       []struct {
+			KLen uint16 `json:"klen"`
+			VLen uint16 `json:"vlen"`
+			Key  string `json:"key"`
+			Val  string `json:"val"`
+		} `json:"key-value"`
+	}{}
+	nodeS.NKeys = b.nKeys()
 	for i := range b.nKeys() {
-		sp.WriteString(fmt.Sprintf("[%d]:%v  ", i, b.getPtr(i)))
-		skv.WriteString(fmt.Sprintf("[%d]{%s:%s}  ", i, b.getKey(i), b.getVal(i)))
+		nodeS.Pointers = append(nodeS.Pointers, b.getPtr(i))
+		nodeS.Offsets = append(nodeS.Offsets, b.getOffset(i))
+		nodeS.OffsetsStart = append(nodeS.OffsetsStart, b.getOffsetPos(i))
+		nodeS.KeyVal = append(nodeS.KeyVal, struct {
+			KLen uint16 `json:"klen"`
+			VLen uint16 `json:"vlen"`
+			Key  string `json:"key"`
+			Val  string `json:"val"`
+		}{
+			KLen: b.getKeyLen(i),
+			VLen: b.getValLen(i),
+			Key:  string(b.getKey(i)),
+			Val:  string(b.getVal(i)),
+		})
 	}
-	mp["pointers"] = sp.String()
-	mp["key-value"] = skv.String()
 	if b.bType() == BNodeLeaf {
-		mp["type"] = "leaf"
-		delete(mp, "pointers")
+		nodeS.Type = "leaf"
 	} else {
-		mp["type"] = "node"
+		nodeS.Type = "node"
 	}
-	marshal, _ := json.Marshal(mp)
+	marshal, _ := json.Marshal(nodeS)
 	return string(marshal)
 }
 
 // nodeLookupLE 返回小于等于key的最大键的索引 kid[i] <= key
 func nodeLookupLE(node BNode, key []byte) uint16 {
+	// TODO: 二分查找
 	nKeys := node.nKeys()
 	found := uint16(0)
 	for i := uint16(1); i < nKeys; i++ {
@@ -149,7 +202,7 @@ func nodeLookupLE(node BNode, key []byte) uint16 {
 	return found
 }
 
-// nodeAppendRange 复制结点信息到新结点 左闭右开区间[,)
+// nodeAppendRange 复制结点信息到新结点
 func nodeAppendRange(dstNode, srcNode BNode, dst, src, n uint16) {
 	if n == 0 {
 		return
@@ -178,11 +231,11 @@ func nodeAppendKV(node BNode, idx uint16, ptr uint64, key []byte, val []byte) {
 	// 设置键值对
 	pos := node.kvPos(idx)
 	binary.LittleEndian.PutUint16(node.data[pos:], uint16(len(key)))
-	binary.LittleEndian.PutUint16(node.data[pos+2:], uint16(len(val)))
-	copy(node.data[pos+4:], key)
-	copy(node.data[pos+4+uint16(len(key)):], val)
+	binary.LittleEndian.PutUint16(node.data[pos+KeyLenSize:], uint16(len(val)))
+	copy(node.data[pos+KeyLenSize+ValLenSize:], key)
+	copy(node.data[pos+KeyLenSize+ValLenSize+uint16(len(key)):], val)
 	// 设置offset
-	node.setOffset(idx+1, node.getOffset(idx)+4+uint16(len(key)+len(val)))
+	node.setOffset(idx+1, node.getOffset(idx)+KeyLenSize+ValLenSize+uint16(len(key)+len(val)))
 }
 
 // leafInsert 插入键值对到叶子结点
