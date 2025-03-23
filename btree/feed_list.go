@@ -1,4 +1,4 @@
-package types
+package btree
 
 import "db-practice/util"
 

@@ -1,4 +1,4 @@
-package types
+package btree
 
 import (
 	"bytes"
@@ -122,7 +122,6 @@ func treeDelete(tree *BTree, node BNode, key []byte) BNode {
 	switch node.bType() {
 	case BNodeLeaf:
 		if !bytes.Equal(key, node.getKey(idx)) {
-			// 未找到
 			return BNode{}
 		}
 		// 删除叶子结点中的键
@@ -142,7 +141,6 @@ func nodeDelete(tree *BTree, node BNode, idx uint16, key []byte) BNode {
 	kPtr := node.getPtr(idx)
 	updated := treeDelete(tree, tree.get(kPtr), key)
 	if len(updated.data) == 0 {
-		// 未找到
 		return BNode{}
 	}
 	tree.del(kPtr)
@@ -183,23 +181,24 @@ func nodeReplace2Kid(dstNode BNode, srcNode BNode, idx uint16, ptr uint64, key [
 	nodeAppendRange(dstNode, srcNode, idx+1, idx+2, srcNode.nKeys()-(idx+2))
 }
 
-// shouldMerge 更新后的孩子是否应该与兄弟姐妹合并
+// shouldMerge 判断更新后的孩子是否应该与兄弟姐妹合并
 func shouldMerge(tree *BTree, node BNode, idx uint16, updated BNode) (int, BNode) {
-	if updated.bType() > BTreePageSize/4 {
+	if updated.nBytes() > BTreePageSize/4 {
 		return 0, BNode{}
 	}
+	merge := func(idx uint16) (BNode, bool) {
+		sibling := tree.get(node.getPtr(idx))
+		ok := sibling.nBytes()+updated.nBytes()-Header <= BTreePageSize
+		return sibling, ok
+	}
 	if idx > 0 {
-		sibling := tree.get(node.getPtr(idx - 1))
-		merged := sibling.bType() + updated.bType() - Header
-		if merged <= BTreePageSize {
+		if sibling, ok := merge(idx - 1); ok {
 			return -1, sibling
 		}
 	}
 	if idx+1 < node.nKeys() {
-		sibling := tree.get(node.getPtr(idx + 1))
-		merged := sibling.bType() + updated.bType() - Header
-		if merged <= BTreePageSize {
-			return +1, sibling
+		if sibling, ok := merge(idx + 1); ok {
+			return 1, sibling
 		}
 	}
 	return 0, BNode{}

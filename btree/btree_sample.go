@@ -1,8 +1,7 @@
-package types
+package btree
 
 import (
 	"fmt"
-	"testing"
 	"unsafe"
 
 	"db-practice/util"
@@ -46,6 +45,11 @@ func (c *C) add(key string, val string) *C {
 	return c
 }
 
+func (c *C) get(key string) (string, bool) {
+	val, ok := c.tree.Get([]byte(key))
+	return string(val), ok
+}
+
 func (c *C) del(key string) bool {
 	delete(c.ref, key)
 	return c.tree.Delete([]byte(key))
@@ -83,13 +87,4 @@ func (c *C) print() {
 		fmt.Println(k, v.String())
 	}
 	fmt.Println()
-}
-
-func TestBTreeIncLength(t *testing.T) {
-	c := newC()
-	for i := 0; i < 4; i++ {
-		key := fmt.Sprintf("000000key%d", i)
-		value := fmt.Sprintf("value%d", i)
-		c.add(key, value).print()
-	}
 }
