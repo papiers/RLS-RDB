@@ -17,20 +17,20 @@ func newC() *C {
 	pages := map[uint64]BNode{}
 	return &C{
 		tree: BTree{
-			get: func(ptr uint64) BNode {
+			get: func(ptr uint64) []byte {
 				node, ok := pages[ptr]
 				util.Assert(ok)
 				return node
 			},
-			new: func(node BNode) uint64 {
-				util.Assert(node.nBytes() <= BTreePageSize)
-				ptr := uint64(uintptr(unsafe.Pointer(&node.data[0])))
-				util.Assert(pages[ptr].data == nil)
+			new: func(node []byte) uint64 {
+				util.Assert(BNode(node).nBytes() <= BTreePageSize)
+				ptr := uint64(uintptr(unsafe.Pointer(&node[0])))
+				util.Assert(pages[ptr] == nil)
 				pages[ptr] = node
 				return ptr
 			},
 			del: func(ptr uint64) {
-				util.Assert(pages[ptr].data != nil)
+				util.Assert(pages[ptr] != nil)
 				delete(pages, ptr)
 			},
 		},
@@ -61,15 +61,15 @@ func (c *C) dump() ([]string, []string) {
 
 	var nodeDump func(uint64)
 	nodeDump = func(ptr uint64) {
-		node := c.tree.get(ptr)
-		nkeys := node.nKeys()
+		node := BNode(c.tree.get(ptr))
+		nKeys := node.nKeys()
 		if node.bType() == BNodeLeaf {
-			for i := uint16(0); i < nkeys; i++ {
+			for i := uint16(0); i < nKeys; i++ {
 				keys = append(keys, string(node.getKey(i)))
 				vals = append(vals, string(node.getVal(i)))
 			}
 		} else {
-			for i := uint16(0); i < nkeys; i++ {
+			for i := uint16(0); i < nKeys; i++ {
 				ptr := node.getPtr(i)
 				nodeDump(ptr)
 			}

@@ -10,9 +10,9 @@ type BTree struct {
 	// pointer（非零页码）
 	root uint64
 	// 用于管理磁盘上页面的回调
-	get func(uint64) BNode // 解引用指针
-	new func(BNode) uint64 // 分配新页面
-	del func(uint64)       // 解除分配页面
+	get func(uint64) []byte // 解引用指针
+	new func([]byte) uint64 // 分配新页面
+	del func(uint64)        // 解除分配页面
 }
 
 // treeInsert 将一个KV插入节中，结果可能会分裂成两个节点。
@@ -20,7 +20,7 @@ type BTree struct {
 func treeInsert(tree *BTree, node BNode, key []byte, val []byte) BNode {
 
 	// 允许超过1页 如果超过将会被分开
-	newNode := BNode{data: make([]byte, 2*BTreePageSize)}
+	newNode := BNode(make([]byte, 2*BTreePageSize))
 	idx := nodeLookupLE(node, key)
 
 	switch node.bType() {
@@ -87,21 +87,23 @@ func nodeSplit2(left, right, old BNode) {
 func nodeSplit3(old BNode) (uint16, [3]BNode) {
 	util.Assert(old.nBytes() <= 3*BTreePageSize+2*Header)
 	if old.nBytes() <= BTreePageSize {
-		old.data = old.data[:BTreePageSize]
+		old = old[:BTreePageSize]
 		return 1, [3]BNode{old}
 	}
 	// 以后可能会拆分
-	left := BNode{make([]byte, 2*BTreePageSize)}
-	right := BNode{make([]byte, BTreePageSize)}
+	left := BNode(make([]byte, 2*BTreePageSize))
+	right := BNode(make([]byte, BTreePageSize))
 	nodeSplit2(left, right, old)
 	if left.nBytes() <= BTreePageSize {
-		left.data = left.data[:BTreePageSize]
+		left = left[:BTreePageSize]
 		return 2, [3]BNode{left, right}
 	}
 	// 左侧节点仍然太大
-	leftOfLeft := BNode{make([]byte, BTreePageSize)}
-	middle := BNode{make([]byte, BTreePageSize)}
+	leftOfLeft := BNode(make([]byte, BTreePageSize))
+	middle := BNode(make([]byte, BTreePageSize))
 	nodeSplit2(leftOfLeft, middle, left)
+	util.Assert(leftOfLeft.nBytes() <= BTreePageSize)
+
 	return 3, [3]BNode{leftOfLeft, middle, right}
 }
 
@@ -125,7 +127,7 @@ func treeDelete(tree *BTree, node BNode, key []byte) BNode {
 			return BNode{}
 		}
 		// 删除叶子结点中的键
-		newNode := BNode{data: make([]byte, BTreePageSize)}
+		newNode := BNode(make([]byte, BTreePageSize))
 		leafDelete(newNode, node, idx)
 		return newNode
 	case BNodeNode:
@@ -140,21 +142,21 @@ func nodeDelete(tree *BTree, node BNode, idx uint16, key []byte) BNode {
 	// 递归到那个孩子
 	kPtr := node.getPtr(idx)
 	updated := treeDelete(tree, tree.get(kPtr), key)
-	if len(updated.data) == 0 {
+	if len(updated) == 0 {
 		return BNode{}
 	}
 	tree.del(kPtr)
-	newNode := BNode{data: make([]byte, BTreePageSize)}
+	newNode := BNode(make([]byte, BTreePageSize))
 	// 检查合并
 	mergeDir, sibling := shouldMerge(tree, node, idx, updated)
 	switch {
 	case mergeDir < 0: // left
-		merged := BNode{data: make([]byte, BTreePageSize)}
+		merged := BNode(make([]byte, BTreePageSize))
 		nodeMerge(merged, sibling, updated)
 		tree.del(node.getPtr(idx - 1))
 		nodeReplace2Kid(newNode, node, idx-1, tree.new(merged), merged.getKey(0))
 	case mergeDir > 0: // right
-		merged := BNode{data: make([]byte, BTreePageSize)}
+		merged := BNode(make([]byte, BTreePageSize))
 		nodeMerge(merged, updated, sibling)
 		tree.del(node.getPtr(idx + 1))
 		nodeReplace2Kid(newNode, node, idx, tree.new(merged), merged.getKey(0))
@@ -187,7 +189,7 @@ func shouldMerge(tree *BTree, node BNode, idx uint16, updated BNode) (int, BNode
 		return 0, BNode{}
 	}
 	merge := func(idx uint16) (BNode, bool) {
-		sibling := tree.get(node.getPtr(idx))
+		sibling := BNode(tree.get(node.getPtr(idx)))
 		ok := sibling.nBytes()+updated.nBytes()-Header <= BTreePageSize
 		return sibling, ok
 	}
@@ -237,7 +239,7 @@ func (tree *BTree) Delete(key []byte) bool {
 		return false
 	}
 	updated := treeDelete(tree, tree.get(tree.root), key)
-	if len(updated.data) == 0 {
+	if len(updated) == 0 {
 		return false // not found
 	}
 	tree.del(tree.root)
@@ -257,7 +259,7 @@ func (tree *BTree) Insert(key []byte, val []byte) {
 	util.Assert(len(val) <= BTreeMaxValSize)
 	if tree.root == 0 {
 		// 创建第一个节点
-		root := BNode{data: make([]byte, BTreePageSize)}
+		root := BNode(make([]byte, BTreePageSize))
 		root.setHeader(BNodeLeaf, 2)
 		// 一个虚拟键，这使得树覆盖整个键空间。
 		// 因此，查找总是可以找到包含的节点。
@@ -272,7 +274,7 @@ func (tree *BTree) Insert(key []byte, val []byte) {
 	nSplit, split := nodeSplit3(node)
 	if nSplit > 1 {
 		// 根被分割，添加新级别。
-		root := BNode{data: make([]byte, BTreePageSize)}
+		root := BNode(make([]byte, BTreePageSize))
 		root.setHeader(BNodeNode, nSplit)
 		for i, kNode := range split[:nSplit] {
 			nodeAppendKV(root, uint16(i), tree.new(kNode), kNode.getKey(0), nil)

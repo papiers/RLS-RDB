@@ -40,39 +40,37 @@ const (
 // | key    | klen bytes |
 // | val    | vlen bytes |
 // 叶子节点和内部节点使用相同的格式。
-type BNode struct {
-	data []byte
-}
+type BNode []byte
 
 // bType 返回结点的类型
-func (b *BNode) bType() uint16 {
-	return binary.LittleEndian.Uint16(b.data)
+func (b BNode) bType() uint16 {
+	return binary.LittleEndian.Uint16(b)
 }
 
 // nKeys 返回结点中键的数量
-func (b *BNode) nKeys() uint16 {
-	return binary.LittleEndian.Uint16(b.data[2:])
+func (b BNode) nKeys() uint16 {
+	return binary.LittleEndian.Uint16(b[2:])
 }
 
 // setHeader 设置结点的类型和键的数量
-func (b *BNode) setHeader(btype, nKeys uint16) {
-	binary.LittleEndian.PutUint16(b.data, btype)
-	binary.LittleEndian.PutUint16(b.data[2:], nKeys)
+func (b BNode) setHeader(btype, nKeys uint16) {
+	binary.LittleEndian.PutUint16(b, btype)
+	binary.LittleEndian.PutUint16(b[2:], nKeys)
 }
 
 // getPtr 返回索引为idx的子节点指针值
-func (b *BNode) getPtr(idx uint16) uint64 {
+func (b BNode) getPtr(idx uint16) uint64 {
 	util.Assert(idx < b.nKeys())
-	return binary.LittleEndian.Uint64(b.data[Header+PointerSize*idx:])
+	return binary.LittleEndian.Uint64(b[Header+PointerSize*idx:])
 }
 
 // setPtr 设置索引为idx的子节点指针值
-func (b *BNode) setPtr(idx uint16, val uint64) {
-	binary.LittleEndian.PutUint64(b.data[Header+PointerSize*idx:], val)
+func (b BNode) setPtr(idx uint16, val uint64) {
+	binary.LittleEndian.PutUint64(b[Header+PointerSize*idx:], val)
 }
 
 // offsetPos 返回索引为idx的偏移量存储位置
-func (b *BNode) offsetPos(idx uint16) uint16 {
+func (b BNode) offsetPos(idx uint16) uint16 {
 	// idx == b.nKeys()时，返回最后一个偏移量位置 记录node大小
 	util.Assert(idx > 0 && idx <= b.nKeys())
 	// 第一个kv的offset为0
@@ -80,7 +78,7 @@ func (b *BNode) offsetPos(idx uint16) uint16 {
 }
 
 // getOffsetPos 返回索引为idx的偏移量存储位置
-func (b *BNode) getOffsetPos(idx uint16) uint16 {
+func (b BNode) getOffsetPos(idx uint16) uint16 {
 	if idx == 0 {
 		return 0
 	}
@@ -88,64 +86,64 @@ func (b *BNode) getOffsetPos(idx uint16) uint16 {
 }
 
 // getOffset 返回索引为idx的偏移量
-func (b *BNode) getOffset(idx uint16) uint16 {
+func (b BNode) getOffset(idx uint16) uint16 {
 	if idx == 0 {
 		return 0
 	}
-	return binary.LittleEndian.Uint16(b.data[b.offsetPos(idx):])
+	return binary.LittleEndian.Uint16(b[b.offsetPos(idx):])
 }
 
 // setOffset 设置索引为idx的偏移量
-func (b *BNode) setOffset(idx uint16, offset uint16) {
-	binary.LittleEndian.PutUint16(b.data[b.offsetPos(idx):], offset)
+func (b BNode) setOffset(idx uint16, offset uint16) {
+	binary.LittleEndian.PutUint16(b[b.offsetPos(idx):], offset)
 }
 
 // kvPos 返回索引为idx的键值对位置
-func (b *BNode) kvPos(idx uint16) uint16 {
+func (b BNode) kvPos(idx uint16) uint16 {
 	// idx == b.nKeys()时，返回最后一个偏移量位置 记录node大小
 	util.Assert(idx <= b.nKeys())
 	return Header + PointerSize*b.nKeys() + offsetSize*b.nKeys() + b.getOffset(idx)
 }
 
 // getKey 返回索引为idx的键值
-func (b *BNode) getKey(idx uint16) []byte {
+func (b BNode) getKey(idx uint16) []byte {
 	util.Assert(idx < b.nKeys())
 	pos := b.kvPos(idx)
-	kLen := binary.LittleEndian.Uint16(b.data[pos:])
-	return b.data[pos+KeyLenSize+ValLenSize:][:kLen]
+	kLen := binary.LittleEndian.Uint16(b[pos:])
+	return b[pos+KeyLenSize+ValLenSize:][:kLen]
 }
 
 // getVal 返回索引为idx的值
-func (b *BNode) getVal(idx uint16) []byte {
+func (b BNode) getVal(idx uint16) []byte {
 	util.Assert(idx < b.nKeys())
 	pos := b.kvPos(idx)
-	kLen := binary.LittleEndian.Uint16(b.data[pos:])
-	vLen := binary.LittleEndian.Uint16(b.data[pos+KeyLenSize:])
+	kLen := binary.LittleEndian.Uint16(b[pos:])
+	vLen := binary.LittleEndian.Uint16(b[pos+KeyLenSize:])
 	start := pos + KeyLenSize + ValLenSize + kLen
-	return b.data[start:][:vLen]
+	return b[start:][:vLen]
 }
 
 // getKeyLen 返回索引为idx的键的长度
-func (b *BNode) getKeyLen(idx uint16) uint16 {
+func (b BNode) getKeyLen(idx uint16) uint16 {
 	util.Assert(idx < b.nKeys())
 	pos := b.kvPos(idx)
-	return binary.LittleEndian.Uint16(b.data[pos:])
+	return binary.LittleEndian.Uint16(b[pos:])
 }
 
 // getValLen 返回索引为idx的值的长度
-func (b *BNode) getValLen(idx uint16) uint16 {
+func (b BNode) getValLen(idx uint16) uint16 {
 	util.Assert(idx < b.nKeys())
 	pos := b.kvPos(idx)
-	return binary.LittleEndian.Uint16(b.data[pos+KeyLenSize:])
+	return binary.LittleEndian.Uint16(b[pos+KeyLenSize:])
 }
 
 // nBytes 返回结点的大小
-func (b *BNode) nBytes() uint16 {
+func (b BNode) nBytes() uint16 {
 	return b.kvPos(b.nKeys())
 }
 
 // String 返回结点信息
-func (b *BNode) String() string {
+func (b BNode) String() string {
 	nodeS := struct {
 		Type         string   `json:"type"`
 		NKeys        uint16   `json:"nKeys"`
@@ -221,7 +219,7 @@ func nodeAppendRange(dstNode, srcNode BNode, dst, src, n uint16) {
 	// 复制键值对
 	begin := srcNode.kvPos(src)
 	end := srcNode.kvPos(src + n)
-	copy(dstNode.data[dstNode.kvPos(dst):], srcNode.data[begin:end])
+	copy(dstNode[dstNode.kvPos(dst):], srcNode[begin:end])
 }
 
 // nodeAppendKV 设置键值对到新结点
@@ -230,10 +228,10 @@ func nodeAppendKV(node BNode, idx uint16, ptr uint64, key []byte, val []byte) {
 	node.setPtr(idx, ptr)
 	// 设置键值对
 	pos := node.kvPos(idx)
-	binary.LittleEndian.PutUint16(node.data[pos:], uint16(len(key)))
-	binary.LittleEndian.PutUint16(node.data[pos+KeyLenSize:], uint16(len(val)))
-	copy(node.data[pos+KeyLenSize+ValLenSize:], key)
-	copy(node.data[pos+KeyLenSize+ValLenSize+uint16(len(key)):], val)
+	binary.LittleEndian.PutUint16(node[pos:], uint16(len(key)))
+	binary.LittleEndian.PutUint16(node[pos+KeyLenSize:], uint16(len(val)))
+	copy(node[pos+KeyLenSize+ValLenSize:], key)
+	copy(node[pos+KeyLenSize+ValLenSize+uint16(len(key)):], val)
 	// 设置offset
 	node.setOffset(idx+1, node.getOffset(idx)+KeyLenSize+ValLenSize+uint16(len(key)+len(val)))
 }
