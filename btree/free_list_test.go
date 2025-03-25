@@ -152,15 +152,6 @@ func TestFreeListEmptyFullEmpty2(t *testing.T) {
 	}
 }
 
-func fmix32(h uint32) uint32 {
-	h ^= h >> 16
-	h *= 0x85ebca6b
-	h ^= h >> 13
-	h *= 0xc2b2ae35
-	h ^= h >> 16
-	return h
-}
-
 func TestFreeListRandom(t *testing.T) {
 	for N := 0; N < 1000; N++ {
 		l := newL()

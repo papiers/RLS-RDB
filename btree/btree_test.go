@@ -1,137 +1,259 @@
 package btree
 
 import (
-	"strconv"
+	"fmt"
+	"math/rand"
+	"sort"
 	"testing"
+	"unsafe"
 
-	"github.com/stretchr/testify/assert"
+	is "github.com/stretchr/testify/require"
+
+	"db-practice/util"
 )
 
-func TestNewC(t *testing.T) {
-	c := newC()
-	if _, ok := c.get("nonexistent"); ok {
-		t.Error("Newly created tree should be empty")
+type C struct {
+	tree  BTree
+	ref   map[string]string
+	pages map[uint64]BNode
+}
+
+func newC() *C {
+	pages := map[uint64]BNode{}
+	return &C{
+		tree: BTree{
+			get: func(ptr uint64) []byte {
+				node, ok := pages[ptr]
+				util.Assert(ok)
+				return node
+			},
+			new: func(node []byte) uint64 {
+				util.Assert(BNode(node).nBytes() <= BTreePageSize)
+				ptr := uint64(uintptr(unsafe.Pointer(&node[0])))
+				util.Assert(pages[ptr] == nil)
+				pages[ptr] = node
+				return ptr
+			},
+			del: func(ptr uint64) {
+				util.Assert(pages[ptr] != nil)
+				delete(pages, ptr)
+			},
+		},
+		ref:   map[string]string{},
+		pages: pages,
 	}
 }
 
-func TestAddGetDelete(t *testing.T) {
+func (c *C) add(key string, val string) {
+	c.tree.Insert([]byte(key), []byte(val))
+	c.ref[key] = val
+}
+
+func (c *C) del(key string) bool {
+	delete(c.ref, key)
+	return c.tree.Delete([]byte(key))
+}
+
+func (c *C) dump() ([]string, []string) {
+	var keys []string
+	var vals []string
+
+	var nodeDump func(uint64)
+	nodeDump = func(ptr uint64) {
+		node := BNode(c.tree.get(ptr))
+		nKeys := node.nKeys()
+		if node.bType() == BNodeLeaf {
+			for i := uint16(0); i < nKeys; i++ {
+				keys = append(keys, string(node.getKey(i)))
+				vals = append(vals, string(node.getVal(i)))
+			}
+		} else {
+			for i := uint16(0); i < nKeys; i++ {
+				ptr := node.getPtr(i)
+				nodeDump(ptr)
+			}
+		}
+	}
+
+	nodeDump(c.tree.root)
+	util.Assert(keys[0] == "")
+	util.Assert(vals[0] == "")
+	return keys[1:], vals[1:]
+}
+
+type sortIF struct {
+	len  int
+	less func(i, j int) bool
+	swap func(i, j int)
+}
+
+func (s sortIF) Len() int {
+	return s.len
+}
+func (s sortIF) Less(i, j int) bool {
+	return s.less(i, j)
+}
+func (s sortIF) Swap(i, j int) {
+	s.swap(i, j)
+}
+
+func (c *C) verify(t *testing.T) {
+	keys, vals := c.dump()
+
+	var rKeys []string
+	var rVals []string
+	for k, v := range c.ref {
+		rKeys = append(rKeys, k)
+		rVals = append(rVals, v)
+	}
+	is.Equal(t, len(rKeys), len(keys))
+	sort.Stable(sortIF{
+		len:  len(rKeys),
+		less: func(i, j int) bool { return rKeys[i] < rKeys[j] },
+		swap: func(i, j int) {
+			k, v := rKeys[i], rVals[i]
+			rKeys[i], rVals[i] = rKeys[j], rVals[j]
+			rKeys[j], rVals[j] = k, v
+		},
+	})
+
+	is.Equal(t, rKeys, keys)
+	is.Equal(t, rVals, vals)
+
+	var nodeVerify func(BNode)
+	nodeVerify = func(node BNode) {
+		nKeys := node.nKeys()
+		util.Assert(nKeys >= 1)
+		if node.bType() == BNodeLeaf {
+			return
+		}
+		for i := uint16(0); i < nKeys; i++ {
+			key := node.getKey(i)
+			kid := BNode(c.tree.get(node.getPtr(i)))
+			is.Equal(t, key, kid.getKey(0))
+			nodeVerify(kid)
+		}
+	}
+
+	nodeVerify(c.tree.get(c.tree.root))
+}
+
+func fmix32(h uint32) uint32 {
+	h ^= h >> 16
+	h *= 0x85ebca6b
+	h ^= h >> 13
+	h *= 0xc2b2ae35
+	h ^= h >> 16
+	return h
+}
+
+func commonTestBasic(t *testing.T, hasher func(uint32) uint32) {
 	c := newC()
+	c.add("k", "v")
+	c.verify(t)
 
-	// Test basic add/get
-	c.add("key1", "val1")
-	if val, ok := c.get("key1"); !ok || val != "val1" {
-		t.Errorf("Get failed after add, expected val1 got %s", val)
+	// insert
+	for i := 0; i < 250000; i++ {
+		key := fmt.Sprintf("key%d", hasher(uint32(i)))
+		val := fmt.Sprintf("vvv%d", hasher(uint32(-i)))
+		c.add(key, val)
+		if i < 2000 {
+			c.verify(t)
+		}
+	}
+	c.verify(t)
+
+	// del
+	for i := 2000; i < 250000; i++ {
+		key := fmt.Sprintf("key%d", hasher(uint32(i)))
+		is.True(t, c.del(key))
+	}
+	c.verify(t)
+
+	// overwrite
+	for i := 0; i < 2000; i++ {
+		key := fmt.Sprintf("key%d", hasher(uint32(i)))
+		val := fmt.Sprintf("vvv%d", hasher(uint32(+i)))
+		c.add(key, val)
+		c.verify(t)
 	}
 
-	// Test delete existing key
-	if deleted := c.del("key1"); !deleted {
-		t.Error("Delete should return true for existing key")
-	}
-	if _, ok := c.get("key1"); ok {
-		t.Error("Key should be deleted")
+	is.False(t, c.del("kk"))
+
+	for i := 0; i < 2000; i++ {
+		key := fmt.Sprintf("key%d", hasher(uint32(i)))
+		is.True(t, c.del(key))
+		c.verify(t)
 	}
 
-	// Test delete non-existing key
-	if deleted := c.del("key1"); deleted {
-		t.Error("Delete should return false for non-existing key")
+	c.add("k", "v2")
+	c.verify(t)
+	c.del("k")
+	c.verify(t)
+
+	// the dummy empty key
+	is.Equal(t, 1, len(c.pages))
+	is.Equal(t, uint16(1), BNode(c.tree.get(c.tree.root)).nKeys())
+}
+
+func TestBTreeBasicAscending(t *testing.T) {
+	commonTestBasic(t, func(h uint32) uint32 { return +h })
+}
+
+func TestBTreeBasicDescending(t *testing.T) {
+	commonTestBasic(t, func(h uint32) uint32 { return -h })
+}
+
+func TestBTreeBasicRand(t *testing.T) {
+	commonTestBasic(t, fmix32)
+}
+
+func TestBTreeRandLength(t *testing.T) {
+	c := newC()
+	for i := 0; i < 2000; i++ {
+		kLen := fmix32(uint32(2*i+0)) % BTreeMaxKeySize
+		vLen := fmix32(uint32(2*i+1)) % BTreeMaxValSize
+		if kLen == 0 {
+			continue
+		}
+
+		key := make([]byte, kLen)
+		for j := range key {
+			key[j] = byte(rand.Intn(256))
+		}
+		val := make([]byte, vLen)
+		// rand.Read(val)
+		c.add(string(key), string(val))
+		c.verify(t)
 	}
 }
 
-func TestDuplicateKeys(t *testing.T) {
-	c := newC()
+func TestBTreeIncLength(t *testing.T) {
+	for l := 1; l < BTreeMaxKeySize+BTreeMaxValSize; l++ {
+		c := newC()
 
-	c.add("key", "val1")
-	c.add("key", "val2") // Overwrite
-
-	if val, ok := c.get("key"); !ok || val != "val2" {
-		t.Errorf("Duplicate key should overwrite value, expected val2 got %s", val)
-	}
-}
-
-func TestMultipleKeys(t *testing.T) {
-	c := newC()
-
-	keys := []string{"b", "a", "c", "d", "e"}
-	for i, key := range keys {
-		c.add(key, strconv.Itoa(i))
-	}
-
-	// Verify all keys exist
-	for i, key := range keys {
-		if val, ok := c.get(key); !ok || val != strconv.Itoa(i) {
-			t.Errorf("Key %s not found or wrong value", key)
+		kLen := l
+		if kLen > BTreeMaxKeySize {
+			kLen = BTreeMaxKeySize
 		}
-	}
+		vLen := l - kLen
+		key := make([]byte, kLen)
+		val := make([]byte, vLen)
 
-	// Delete middle key
-	if !c.del("c") {
-		t.Error("Failed to delete existing key 'c'")
-	}
-	if _, ok := c.get("c"); ok {
-		t.Error("Deleted key 'c' still exists")
-	}
-
-	// Verify remaining keys
-	remaining := []string{"a", "b", "d", "e"}
-	for _, key := range remaining {
-		if _, ok := c.get(key); !ok {
-			t.Errorf("Key %s missing after deletion", key)
+		factor := BTreePageSize / l
+		size := factor * factor * 2
+		if size > 4000 {
+			size = 4000
 		}
-	}
-}
-
-func TestBulkOperations(t *testing.T) {
-	c := newC()
-	const numKeys = 1000
-
-	// Insert
-	for i := 0; i < numKeys; i++ {
-		key := strconv.Itoa(i)
-		c.add(key, key)
-	}
-
-	// Verify
-	for i := 0; i < numKeys; i++ {
-		key := strconv.Itoa(i)
-		if val, ok := c.get(key); !ok || val != key {
-			t.Errorf("Key %s missing or wrong value", key)
+		if size < 10 {
+			size = 10
 		}
-	}
-
-	// Delete even keys
-	for i := 0; i < numKeys; i += 2 {
-		key := strconv.Itoa(i)
-		if !c.del(key) {
-			t.Errorf("Failed to delete key %s", key)
+		for i := 0; i < size; i++ {
+			for v := range key {
+				key[v] = byte(rand.Intn(256))
+			}
+			c.add(string(key), string(val))
 		}
+		c.verify(t)
 	}
-
-	// Verify after deletion
-	for i := 0; i < numKeys; i++ {
-		key := strconv.Itoa(i)
-		_, ok := c.get(key)
-		if i%2 == 0 && ok {
-			t.Errorf("Deleted key %s still exists", key)
-		}
-		if i%2 != 0 && !ok {
-			t.Errorf("Existing key %s missing", key)
-		}
-	}
-}
-
-func TestEdgeCases(t *testing.T) {
-	c := newC()
-
-	// Empty tree operations
-	if _, ok := c.get(""); ok {
-		t.Error("Empty key should not exist in new tree")
-	}
-
-	assert.Panics(t, func() {
-		c.del("")
-	}, "assertion failure")
-
-	assert.Panics(t, func() {
-		c.add("", "empty")
-	}, "assertion failure")
 }
