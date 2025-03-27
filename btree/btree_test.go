@@ -100,12 +100,14 @@ func (s sortIF) Swap(i, j int) {
 func (c *C) verify(t *testing.T) {
 	keys, vals := c.dump()
 
-	var rKeys []string
-	var rVals []string
+	rKeys := []string{""}
+	rVals := []string{""}
 	for k, v := range c.ref {
 		rKeys = append(rKeys, k)
 		rVals = append(rVals, v)
 	}
+	rKeys, rVals = rKeys[1:], rVals[1:]
+
 	is.Equal(t, len(rKeys), len(keys))
 	sort.Stable(sortIF{
 		len:  len(rKeys),
@@ -256,4 +258,8 @@ func TestBTreeIncLength(t *testing.T) {
 		}
 		c.verify(t)
 	}
+}
+
+func printSliceInfo(s []string) {
+	fmt.Printf("s: %v, is nil: %t, len: %d, cap: %d\n", s, s == nil, len(s), cap(s))
 }
