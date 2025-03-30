@@ -1,4 +1,4 @@
-package btree
+package core
 
 import (
 	"slices"

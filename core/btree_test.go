@@ -1,4 +1,4 @@
-package btree
+package core
 
 import (
 	"fmt"
@@ -45,7 +45,7 @@ func newC() *C {
 }
 
 func (c *C) add(key string, val string) {
-	c.tree.Insert([]byte(key), []byte(val))
+	c.tree.Upsert([]byte(key), []byte(val))
 	c.ref[key] = val
 }
 

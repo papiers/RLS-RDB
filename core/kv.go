@@ -1,4 +1,4 @@
-package btree
+package core
 
 import (
 	"bytes"
@@ -24,7 +24,7 @@ type KV struct {
 	}
 	page struct {
 		flushed uint64 // 数据库大小（页数）
-		nappend uint64
+		nAppend uint64
 		updates map[uint64][]byte
 	}
 	failed bool
@@ -32,7 +32,7 @@ type KV struct {
 
 // pageRead 读取一个页面
 func (db *KV) pageRead(ptr uint64) []byte {
-	util.Assert(ptr < db.page.flushed+db.page.nappend)
+	util.Assert(ptr < db.page.flushed+db.page.nAppend)
 	if node, ok := db.page.updates[ptr]; ok {
 		return node
 	}
@@ -42,8 +42,8 @@ func (db *KV) pageRead(ptr uint64) []byte {
 // pageAppend 分配一个新页面。
 func (db *KV) pageAppend(node []byte) uint64 {
 	util.Assert(len(node) == BTreePageSize)
-	ptr := db.page.flushed + db.page.nappend
-	db.page.nappend++
+	ptr := db.page.flushed + db.page.nAppend
+	db.page.nAppend++
 	util.Assert(db.page.updates[ptr] != nil)
 	db.page.updates[ptr] = node
 	return ptr
@@ -61,7 +61,7 @@ func (db *KV) pageAlloc(node []byte) uint64 {
 
 // pageWrite 更新一个存在的页面
 func (db *KV) pageWrite(ptr uint64) []byte {
-	util.Assert(ptr < db.page.flushed+db.page.nappend)
+	util.Assert(ptr < db.page.flushed+db.page.nAppend)
 	if node, ok := db.page.updates[ptr]; ok {
 		return node
 	}
@@ -141,10 +141,18 @@ func (db *KV) Get(key []byte) ([]byte, bool) {
 }
 
 // Set 设置值
-func (db *KV) Set(key []byte, val []byte) error {
+func (db *KV) Set(key []byte, val []byte) (bool, error) {
+	return db.Update(&UpdateReq{Key: key, Val: val})
+}
+
+// Update 更新值
+func (db *KV) Update(req *UpdateReq) (bool, error) {
 	meta := saveMeta(db)
-	db.tree.Insert(key, val)
-	return updateOrRevert(db, meta)
+	if !db.tree.Update(req) {
+		return false, nil
+	}
+	err := updateOrRevert(db, meta)
+	return err == nil, err
 }
 
 // Del 删除值
@@ -195,7 +203,7 @@ func updateOrRevert(db *KV, meta []byte) error {
 	if err := updateFile(db); err != nil {
 		db.failed = true
 		loadMeta(db, meta)
-		db.page.nappend = 0
+		db.page.nAppend = 0
 		db.page.updates = make(map[uint64][]byte)
 		return err
 	}
@@ -227,7 +235,7 @@ func createFileSync(file string) (int, error) {
 
 // writePages 将临时页面写入文件。
 func writePages(db *KV) error {
-	size := int(db.page.flushed+db.page.nappend) * BTreePageSize
+	size := int(db.page.flushed+db.page.nAppend) * BTreePageSize
 	if err := extendMmap(db, size); err != nil {
 		return err
 	}
@@ -239,8 +247,8 @@ func writePages(db *KV) error {
 		}
 	}
 
-	db.page.flushed += db.page.nappend
-	db.page.nappend = 0
+	db.page.flushed += db.page.nAppend
+	db.page.nAppend = 0
 	db.page.updates = make(map[uint64][]byte)
 	return nil
 }

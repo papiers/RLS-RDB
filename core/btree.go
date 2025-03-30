@@ -1,4 +1,4 @@
-package btree
+package core
 
 import (
 	"bytes"
@@ -15,33 +15,66 @@ type BTree struct {
 	del func(uint64)        // 解除分配页面
 }
 
+// 更新模式
+const (
+	ModeUpsert     = 0 // 插入或替换
+	ModeUpdateOnly = 1 // 更新存在的key
+	ModeInsertOnly = 2 // 仅添加新key
+)
+
+type UpdateReq struct {
+	tree *BTree
+
+	Added   bool // 添加了新key
+	Updated bool // 已添加新key或更改旧key
+
+	Key  []byte
+	Val  []byte
+	Mode int
+}
+
 // treeInsert 将一个KV插入节中，结果可能会分裂成两个节点。
 // 调用者负责释放输入节点的内存并拆分和分配结果节点。
-func treeInsert(tree *BTree, node BNode, key []byte, val []byte) BNode {
+func treeInsert(req *UpdateReq, node BNode) BNode {
 
 	// 允许超过1页 如果超过将会被分开
 	newNode := BNode(make([]byte, 2*BTreePageSize))
-	idx := nodeLookupLE(node, key)
+	idx := nodeLookupLE(node, req.Key)
 
 	switch node.bType() {
 	case BNodeLeaf:
-		if bytes.Equal(key, node.getKey(idx)) {
-			leafUpdate(newNode, node, idx, key, val)
+		if bytes.Equal(req.Key, node.getKey(idx)) {
+			if req.Mode == ModeInsertOnly {
+				return BNode{}
+			}
+			if bytes.Equal(req.Val, node.getVal(idx)) {
+				return BNode{}
+			}
+			leafUpdate(newNode, node, idx, req.Key, req.Val)
+			req.Updated = true
 		} else {
-			leafInsert(newNode, node, idx+1, key, val)
+			if req.Mode == ModeUpdateOnly {
+				return BNode{}
+			}
+			leafInsert(newNode, node, idx+1, req.Key, req.Val)
+			req.Updated = true
+			req.Added = true
 		}
 	case BNodeNode:
 		// 内部节点，将其插入到子节点。
 		// 获取并释放子节点
 		kPtr := node.getPtr(idx)
-		kNode := tree.get(kPtr)
-		tree.del(kPtr)
+		kNode := req.tree.get(kPtr)
 		// 递归插入到子节点
-		kNode = treeInsert(tree, kNode, key, val)
+		kNode = treeInsert(req, kNode)
+		if len(kNode) == 0 {
+			return BNode{}
+		}
+		req.tree.del(kPtr)
 		// 拆分结果
 		nSplit, split := nodeSplit3(kNode)
 		// 更新子结点链接
-		nodeReplaceKidN(tree, newNode, node, idx, split[:nSplit]...)
+		nodeReplaceKidN(req.tree, newNode, node, idx, split[:nSplit]...)
 	default:
 		panic("bad node!")
 	}
@@ -252,11 +285,12 @@ func (tree *BTree) Delete(key []byte) bool {
 	return true
 }
 
-// Insert 从树中插入键值对
-func (tree *BTree) Insert(key []byte, val []byte) {
-	util.Assert(len(key) != 0)
-	util.Assert(len(key) <= BTreeMaxKeySize)
-	util.Assert(len(val) <= BTreeMaxValSize)
+// Update 更新树中的键值对
+func (tree *BTree) Update(req *UpdateReq) bool {
+	util.Assert(len(req.Key) != 0)
+	util.Assert(len(req.Key) <= BTreeMaxKeySize)
+	util.Assert(len(req.Val) <= BTreeMaxValSize)
+
 	if tree.root == 0 {
 		// 创建第一个节点
 		root := BNode(make([]byte, BTreePageSize))
@@ -264,23 +298,36 @@ func (tree *BTree) Insert(key []byte, val []byte) {
 		// 一个虚拟键，这使得树覆盖整个键空间。
 		// 因此，查找总是可以找到包含的节点。
 		nodeAppendKV(root, 0, 0, nil, nil)
-		nodeAppendKV(root, 1, 0, key, val)
+		nodeAppendKV(root, 1, 0, req.Key, req.Val)
 		tree.root = tree.new(root)
-		return
+		req.Added = true
+		req.Updated = true
+		return true
 	}
-	node := tree.get(tree.root)
+
+	req.tree = tree
+	updated := treeInsert(req, tree.get(tree.root))
+	if len(updated) == 0 {
+		return false
+	}
+	nSplit, split := nodeSplit3(updated)
 	tree.del(tree.root)
-	node = treeInsert(tree, node, key, val)
-	nSplit, split := nodeSplit3(node)
 	if nSplit > 1 {
 		// 根被分割，添加新级别。
 		root := BNode(make([]byte, BTreePageSize))
 		root.setHeader(BNodeNode, nSplit)
 		for i, kNode := range split[:nSplit] {
-			nodeAppendKV(root, uint16(i), tree.new(kNode), kNode.getKey(0), nil)
+			ptr, key := tree.new(kNode), kNode.getKey(0)
+			nodeAppendKV(root, uint16(i), ptr, key, nil)
 		}
 		tree.root = tree.new(root)
 	} else {
 		tree.root = tree.new(split[0])
 	}
+	return true
+}
+
+// Upsert 更新或插入键值对
+func (tree *BTree) Upsert(key []byte, val []byte) bool {
+	return tree.Update(&UpdateReq{Key: key, Val: val})
 }
