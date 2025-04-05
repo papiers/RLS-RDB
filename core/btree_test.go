@@ -44,16 +44,19 @@ func newC() *C {
 	}
 }
 
+// add 添加键值对
 func (c *C) add(key string, val string) {
 	c.tree.Upsert([]byte(key), []byte(val))
 	c.ref[key] = val
 }
 
+// del 删除键值对
 func (c *C) del(key string) bool {
 	delete(c.ref, key)
 	return c.tree.Delete([]byte(key))
 }
 
+// dump 遍历树，返回所有键值对
 func (c *C) dump() ([]string, []string) {
 	var keys []string
 	var vals []string
@@ -97,6 +100,7 @@ func (s sortIF) Swap(i, j int) {
 	s.swap(i, j)
 }
 
+// verify 验证树是否正确
 func (c *C) verify(t *testing.T) {
 	keys, vals := c.dump()
 
@@ -109,13 +113,12 @@ func (c *C) verify(t *testing.T) {
 	rKeys, rVals = rKeys[1:], rVals[1:]
 
 	is.Equal(t, len(rKeys), len(keys))
-	sort.Stable(sortIF{
+	sort.Sort(sortIF{
 		len:  len(rKeys),
 		less: func(i, j int) bool { return rKeys[i] < rKeys[j] },
 		swap: func(i, j int) {
-			k, v := rKeys[i], rVals[i]
-			rKeys[i], rVals[i] = rKeys[j], rVals[j]
-			rKeys[j], rVals[j] = k, v
+			rKeys[i], rKeys[j] = rKeys[j], rKeys[i]
+			rVals[i], rVals[j] = rVals[j], rVals[i]
 		},
 	})
 
