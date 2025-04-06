@@ -13,7 +13,8 @@ import (
 )
 
 type KV struct {
-	Path string
+	Path  string
+	Fsync func(int) error
 
 	fd   int
 	tree BTree
@@ -23,9 +24,9 @@ type KV struct {
 		chunks [][]byte // 多个 mmap，可以是非连续的
 	}
 	page struct {
-		flushed uint64 // 数据库大小（页数）
-		nAppend uint64
-		updates map[uint64][]byte
+		flushed uint64            // 磁盘中数据库总页面数
+		nAppend uint64            // 未刷入磁盘的页面数
+		updates map[uint64][]byte // 内存中待更新的数据
 	}
 	failed bool
 }
@@ -39,17 +40,17 @@ func (db *KV) pageRead(ptr uint64) []byte {
 	return db.pageReadFile(ptr)
 }
 
-// pageAppend 分配一个新页面。
+// pageAppend 分配一个新页面
 func (db *KV) pageAppend(node []byte) uint64 {
 	util.Assert(len(node) == BTreePageSize)
 	ptr := db.page.flushed + db.page.nAppend
 	db.page.nAppend++
-	util.Assert(db.page.updates[ptr] != nil)
+	util.Assert(db.page.updates[ptr] == nil)
 	db.page.updates[ptr] = node
 	return ptr
 }
 
-// pageAlloc 分配一个新页面
+// pageAlloc 分配一个新页面 先尝试复用
 func (db *KV) pageAlloc(node []byte) uint64 {
 	util.Assert(len(node) == BTreePageSize)
 	if ptr := db.free.PopHead(); ptr != 0 {
@@ -85,8 +86,12 @@ func (db *KV) pageReadFile(ptr uint64) []byte {
 	panic("bad ptr")
 }
 
-// Open 打开数据库。
+// Open 打开数据库
 func (db *KV) Open() error {
+	if db.Fsync == nil {
+		db.Fsync = syscall.Fsync
+	}
+
 	db.page.updates = make(map[uint64][]byte)
 
 	db.tree.get = db.pageRead
@@ -104,18 +109,18 @@ func (db *KV) Open() error {
 	}
 
 	// 获取文件大小
-	finfo := syscall.Stat_t{}
-	if err = syscall.Fstat(db.fd, &finfo); err != nil {
+	fInfo := syscall.Stat_t{}
+	if err = syscall.Fstat(db.fd, &fInfo); err != nil {
 		goto fail
 	}
 
 	// 创建初始 mmap
-	if err = extendMmap(db, int(finfo.Size)); err != nil {
+	if err = extendMmap(db, int(fInfo.Size)); err != nil {
 		goto fail
 	}
 
 	// 阅读 meta 页面
-	if err = readRoot(db, finfo.Size); err != nil {
+	if err = readRoot(db, fInfo.Size); err != nil {
 		goto fail
 	}
 	return nil
@@ -174,13 +179,13 @@ func updateFile(db *KV) error {
 	if err := writePages(db); err != nil {
 		return err
 	}
-	if err := syscall.Fsync(db.fd); err != nil {
+	if err := db.Fsync(db.fd); err != nil {
 		return err
 	}
 	if err := updateRoot(db); err != nil {
 		return err
 	}
-	if err := syscall.Fsync(db.fd); err != nil {
+	if err := db.Fsync(db.fd); err != nil {
 		return err
 	}
 	// 为下一次更新准备freelist
@@ -195,7 +200,7 @@ func updateOrRevert(db *KV, meta []byte) error {
 		if _, err := syscall.Pwrite(db.fd, meta, 0); err != nil {
 			return fmt.Errorf("rewrite meta page: %w", err)
 		}
-		if err := syscall.Fsync(db.fd); err != nil {
+		if err := db.Fsync(db.fd); err != nil {
 			return err
 		}
 		db.failed = false
@@ -233,7 +238,7 @@ func createFileSync(file string) (int, error) {
 	return fd, nil
 }
 
-// writePages 将临时页面写入文件。
+// writePages 将内存中的临时页面写入磁盘文件
 func writePages(db *KV) error {
 	size := int(db.page.flushed+db.page.nAppend) * BTreePageSize
 	if err := extendMmap(db, size); err != nil {
@@ -292,9 +297,6 @@ func saveMeta(db *KV) []byte {
 
 // loadMeta 从内存加载元数据
 func loadMeta(db *KV, data []byte) {
-	if string(data[:16]) != DbSig {
-		panic("invalid db file")
-	}
 	db.tree.root = binary.LittleEndian.Uint64(data[16:])
 	db.page.flushed = binary.LittleEndian.Uint64(data[24:])
 	db.free.headPage = binary.LittleEndian.Uint64(data[32:])
@@ -309,7 +311,9 @@ func readRoot(db *KV, fileSize int64) error {
 		return fmt.Errorf("file size must be a multiple of %d", BTreePageSize)
 	}
 	if fileSize == 0 {
+		// 保留 2 个页面: meta 页面和 freelist 节点
 		db.page.flushed = 2
+		// 将初始节点添加到 freelist ，使其永远不会为空
 		db.free.headPage = 1
 		db.free.tailPage = 1
 		return nil

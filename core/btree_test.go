@@ -12,12 +12,14 @@ import (
 	"db-practice/util"
 )
 
+// 测试树
 type C struct {
 	tree  BTree
 	ref   map[string]string
 	pages map[uint64]BNode
 }
 
+// newC 创建测试用的树
 func newC() *C {
 	pages := map[uint64]BNode{}
 	return &C{
@@ -57,13 +59,13 @@ func (c *C) del(key string) bool {
 }
 
 // dump 遍历树，返回所有键值对
-func (c *C) dump() ([]string, []string) {
+func dump(tree *BTree) ([]string, []string) {
 	var keys []string
 	var vals []string
 
 	var nodeDump func(uint64)
 	nodeDump = func(ptr uint64) {
-		node := BNode(c.tree.get(ptr))
+		node := BNode(tree.get(ptr))
 		nKeys := node.nKeys()
 		if node.bType() == BNodeLeaf {
 			for i := uint16(0); i < nKeys; i++ {
@@ -78,12 +80,18 @@ func (c *C) dump() ([]string, []string) {
 		}
 	}
 
-	nodeDump(c.tree.root)
+	nodeDump(tree.root)
 	util.Assert(keys[0] == "")
 	util.Assert(vals[0] == "")
 	return keys[1:], vals[1:]
 }
 
+// dump 遍历树，返回所有键值对
+func (c *C) dump() ([]string, []string) {
+	return dump(&c.tree)
+}
+
+// sortIF
 type sortIF struct {
 	len  int
 	less func(i, j int) bool
@@ -93,9 +101,11 @@ type sortIF struct {
 func (s sortIF) Len() int {
 	return s.len
 }
+
 func (s sortIF) Less(i, j int) bool {
 	return s.less(i, j)
 }
+
 func (s sortIF) Swap(i, j int) {
 	s.swap(i, j)
 }
@@ -104,8 +114,7 @@ func (s sortIF) Swap(i, j int) {
 func (c *C) verify(t *testing.T) {
 	keys, vals := c.dump()
 
-	rKeys := []string{""}
-	rVals := []string{""}
+	rKeys, rVals := []string{""}, []string{""}
 	for k, v := range c.ref {
 		rKeys = append(rKeys, k)
 		rVals = append(rVals, v)
