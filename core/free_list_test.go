@@ -7,6 +7,7 @@ import (
 	"db-practice/util"
 )
 
+// 测试 FreeList
 type L struct {
 	free  FreeList
 	pages map[uint64][]byte // simulate disk pages
@@ -15,6 +16,7 @@ type L struct {
 	removed []uint64
 }
 
+// 新建 FreeList
 func newL() *L {
 	pages := map[uint64][]byte{}
 	pages[1] = make([]byte, BTreePageSize) // initial node
@@ -42,7 +44,7 @@ func newL() *L {
 	}
 }
 
-// returns the content and the list nodes
+// flDump  返回内容和结点
 func flDump(free *FreeList) (list []uint64, nodes []uint64) {
 	ptr := free.headPage
 	nodes = append(nodes, ptr)
@@ -59,6 +61,7 @@ func flDump(free *FreeList) (list []uint64, nodes []uint64) {
 	return
 }
 
+// push 添加一个新结点到 FreeList
 func (l *L) push(ptr uint64) {
 	util.Assert(l.pages[ptr] == nil)
 	l.pages[ptr] = make([]byte, BTreePageSize)
@@ -66,6 +69,7 @@ func (l *L) push(ptr uint64) {
 	l.added = append(l.added, ptr)
 }
 
+// pop 返回一个新结点
 func (l *L) pop() uint64 {
 	ptr := l.free.PopHead()
 	if ptr != 0 {
@@ -74,6 +78,7 @@ func (l *L) pop() uint64 {
 	return ptr
 }
 
+// verify 验证 FreeList 的正确性
 func (l *L) verify() {
 	l.free.check()
 
