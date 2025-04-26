@@ -1,8 +1,10 @@
 package core
 
 import (
+	"math"
 	"os"
 	"reflect"
+	"sort"
 	"testing"
 
 	is "github.com/stretchr/testify/require"
@@ -183,6 +185,131 @@ func TestTableBasic(t *testing.T) {
 		deleted = r.del("tbl_test", key)
 		is.True(t, deleted)
 	}
+
+	r.dispose()
+}
+
+func TestStringEscape(t *testing.T) {
+	in := [][]byte{
+		{},
+		{0},
+		{1},
+	}
+	out := [][]byte{
+		{},
+		{1, 1},
+		{1, 2},
+	}
+	for i, s := range in {
+		b := escapeString(s)
+		is.Equal(t, out[i], b)
+		s2 := unescapeString(b)
+		is.Equal(t, s, s2)
+	}
+}
+
+func TestTableEncoding(t *testing.T) {
+	input := []int{-1, 0, +1, math.MinInt64, math.MaxInt64}
+	sort.Ints(input)
+
+	var encoded []string
+	for _, i := range input {
+		v := Value{Type: TypeInt64, I64: int64(i)}
+		b := encodeValues(nil, []Value{v})
+		out := []Value{v}
+		decodeValues(b, out)
+		util.Assert(out[0].I64 == int64(i))
+		encoded = append(encoded, string(b))
+	}
+
+	is.True(t, sort.StringsAreSorted(encoded))
+}
+
+func TestTableScan(t *testing.T) {
+	r := newR()
+	tdef := &TableDef{
+		Name:  "tbl_test",
+		Cols:  []string{"ki1", "ks2", "s1", "i2"},
+		Types: []uint32{TypeInt64, TypeBytes, TypeBytes, TypeInt64},
+		PKeys: 2,
+	}
+	r.create(tdef)
+
+	size := 100
+	for i := 0; i < size; i += 2 {
+		rec := Record{}
+		rec.AddInt64("ki1", int64(i)).AddStr("ks2", []byte("hello"))
+		rec.AddStr("s1", []byte("world")).AddInt64("i2", int64(-i))
+		added := r.add("tbl_test", rec)
+		util.Assert(added)
+	}
+
+	tmpKey := func(n int) Record {
+		rec := Record{}
+		rec.AddInt64("ki1", int64(n)).AddStr("ks2", []byte("hello"))
+		return rec
+	}
+
+	for i := 0; i < size; i += 2 {
+		var ref []int64
+		for j := i; j < size; j += 2 {
+			ref = append(ref, int64(j))
+
+			scanners := []Scanner{
+				{
+					Cmp1: CmpGe,
+					Cmp2: CmpLe,
+					Key1: tmpKey(i),
+					Key2: tmpKey(j),
+				},
+				{
+					Cmp1: CmpGe,
+					Cmp2: CmpLe,
+					Key1: tmpKey(i - 1),
+					Key2: tmpKey(j + 1),
+				},
+				{
+					Cmp1: CmpGt,
+					Cmp2: CmpLt,
+					Key1: tmpKey(i - 1),
+					Key2: tmpKey(j + 1),
+				},
+				{
+					Cmp1: CmpGt,
+					Cmp2: CmpLt,
+					Key1: tmpKey(i - 2),
+					Key2: tmpKey(j + 2),
+				},
+			}
+			for _, tmp := range scanners {
+				tmp.Cmp1, tmp.Cmp2 = tmp.Cmp2, tmp.Cmp1
+				tmp.Key1, tmp.Key2 = tmp.Key2, tmp.Key1
+				scanners = append(scanners, tmp)
+			}
+
+			for _, sc := range scanners {
+				err := r.db.Scan("tbl_test", &sc)
+				util.Assert(err == nil)
+
+				var keys []int64
+				got := Record{}
+				for sc.Valid() {
+					sc.Deref(&got)
+					keys = append(keys, got.Get("ki1").I64)
+					sc.Next()
+				}
+				if sc.Cmp1 < sc.Cmp2 {
+					// reverse
+					for a := 0; a < len(keys)/2; a++ {
+						b := len(keys) - 1 - a
+						keys[a], keys[b] = keys[b], keys[a]
+					}
+				}
+
+				is.Equal(t, ref, keys)
+			} // scanners
+		} // j
+	} // i
 
 	r.dispose()
 }

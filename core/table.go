@@ -193,6 +193,15 @@ func (db *DB) Delete(table string, rec Record) (bool, error) {
 	return dbDelete(db, tdef, rec)
 }
 
+// Scan 扫描记录
+func (db *DB) Scan(table string, req *Scanner) error {
+	tdef := getTableDef(db, table)
+	if tdef == nil {
+		return fmt.Errorf("table not found: %s", table)
+	}
+	return dbScan(db, tdef, req)
+}
+
 // dbDelete 按主键删除记录
 func dbDelete(db *DB, tdef *TableDef, rec Record) (bool, error) {
 	values, err := checkRecord(tdef, rec, tdef.PKeys)
@@ -299,7 +308,7 @@ func checkRecord(tdef *TableDef, rec Record, n int) ([]Value, error) {
 	return vals, nil
 }
 
-// encodeKey 对于主键
+// encodeKey 编码主键
 func encodeKey(out []byte, prefix uint32, vals []Value) []byte {
 	// 4 字节表前缀
 	var buf [4]byte
@@ -308,6 +317,11 @@ func encodeKey(out []byte, prefix uint32, vals []Value) []byte {
 	// 顺序保持的编码key
 	out = encodeValues(out, vals)
 	return out
+}
+
+// decodeKey 解码主键
+func decodeKey(in []byte, out []Value) {
+	decodeValues(in[4:], out)
 }
 
 // encodeValues 保序编码
@@ -419,5 +433,79 @@ func tableDefCheck(tdef *TableDef) error {
 	if bad {
 		return fmt.Errorf("bad table schema: %s", tdef.Name)
 	}
+	return nil
+}
+
+// Scanner 范围查询的迭代器
+type Scanner struct {
+	// 范围，从 Key1 到 Key2
+	Cmp1 int
+	Cmp2 int
+	Key1 Record
+	Key2 Record
+	// internal
+	tdef   *TableDef
+	iter   *BIter // 底层 B 树迭代器
+	keyEnd []byte // 编码后的 Key2
+}
+
+// Valid 是否在范围内
+func (sc *Scanner) Valid() bool {
+	if !sc.iter.Valid() {
+		return false
+	}
+	key, _ := sc.iter.Deref()
+	return cmpOK(key, sc.Cmp2, sc.keyEnd)
+}
+
+// Next 移动底层 B 树迭代器
+func (sc *Scanner) Next() {
+	util.Assert(sc.Valid())
+	if sc.Cmp1 > 0 {
+		sc.iter.Next()
+	} else {
+		sc.iter.Prev()
+	}
+}
+
+// Deref 返回当前行
+func (sc *Scanner) Deref(rec *Record) {
+	util.Assert(sc.Valid())
+	// 从迭代器中获取 KV
+	key, val := sc.iter.Deref()
+	// 将 KV 解码为列
+	rec.Cols = sc.tdef.Cols
+	rec.Vals = rec.Vals[:0]
+	for _, v := range sc.tdef.Types {
+		rec.Vals = append(rec.Vals, Value{Type: v})
+	}
+	decodeKey(key, rec.Vals[:sc.tdef.PKeys])
+	decodeValues(val, rec.Vals[sc.tdef.PKeys:])
+}
+
+func dbScan(db *DB, tdef *TableDef, req *Scanner) error {
+	// 0. 健全性检查
+	switch {
+	case req.Cmp1 > 0 && req.Cmp2 < 0:
+	case req.Cmp2 > 0 && req.Cmp1 < 0:
+	default:
+		return fmt.Errorf("bad range")
+	}
+	req.tdef = tdef
+	// 1. 根据架构对输入列重新排序
+	// TODO: allow prefixes
+	values1, err := checkRecord(tdef, req.Key1, tdef.PKeys)
+	if err != nil {
+		return err
+	}
+	values2, err := checkRecord(tdef, req.Key2, tdef.PKeys)
+	if err != nil {
+		return err
+	}
+	// 2. 对主键进行编码
+	keyStart := encodeKey(nil, tdef.Prefix, values1[:tdef.PKeys])
+	req.keyEnd = encodeKey(nil, tdef.Prefix, values2[:tdef.PKeys])
+	// 3. 搜索开始key
+	req.iter = db.kv.tree.Seek(keyStart, req.Cmp1)
 	return nil
 }
