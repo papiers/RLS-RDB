@@ -1,6 +1,7 @@
 package util
 
 import (
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -9,21 +10,24 @@ import (
 const SysOpenatArm64 = 463
 
 func Openat(dirFd int, path string, flags int, perm uint32) (int, error) {
-	// 将路径转换为 C 风格字符串
+	// Prefer the standard library implementation when available.
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		return syscall.Openat(dirFd, path, flags, perm)
+	}
+
 	pathPtr, err := syscall.BytePtrFromString(path)
 	if err != nil {
 		return -1, err
 	}
 
-	// 调用系统调用
 	r1, _, e := syscall.Syscall6(
 		SysOpenatArm64,
 		uintptr(dirFd),
 		uintptr(unsafe.Pointer(pathPtr)),
 		uintptr(flags),
 		uintptr(perm),
-		0, // 未使用
-		0, // 未使用
+		0,
+		0,
 	)
 
 	if e != 0 {
